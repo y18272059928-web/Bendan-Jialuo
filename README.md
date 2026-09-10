@@ -139,10 +139,6 @@ app\build\outputs\apk\release\app-release.apk
 
 项目还在慢慢完善。如果遇到问题，欢迎提交 [Issue](https://github.com/y18272059928-web/Bendan-Jialuo/issues)。
 
-## 🙏 致谢
-
-周课表的呈现与交互设计参考了武汉大学同学开发的 [表里珞珈 · Schedule-For-WHU](https://github.com/PriAssassin141/Schedule-For-WHU)，在此感谢。
-
 ## 🤝 参与贡献
 
 欢迎提交 Issue 或 Pull Request。涉及智慧珞珈页面适配时，请先阅读 [参与贡献](CONTRIBUTING.md) 和 [脱敏采集指南](docs/CAPTURE_GUIDE.md)。
