@@ -16,7 +16,20 @@ data class Course(
     val name: String,
     val teacher: String,
     val colorArgb: Long,
+    val note: String = "",
+    val marker: CourseMarker = CourseMarker.NORMAL,
 )
+
+enum class CourseMarker(val label: String) {
+    NORMAL("正常"),
+    EXAM_WEEK("考试周"),
+    FINISHED("已结课");
+
+    companion object {
+        fun fromStorage(value: String?): CourseMarker =
+            entries.firstOrNull { it.name == value } ?: NORMAL
+    }
+}
 
 data class CourseMeeting(
     val id: Long,

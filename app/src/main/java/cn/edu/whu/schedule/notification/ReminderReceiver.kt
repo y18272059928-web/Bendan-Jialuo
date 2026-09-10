@@ -13,6 +13,7 @@ import androidx.core.content.ContextCompat
 import cn.edu.whu.schedule.MainActivity
 import cn.edu.whu.schedule.R
 import cn.edu.whu.schedule.ScheduleApplication
+import cn.edu.whu.schedule.data.CourseMarker
 import cn.edu.whu.schedule.domain.OccurrenceEngine
 import java.time.LocalDate
 
@@ -51,6 +52,7 @@ class ReminderReceiver : BroadcastReceiver() {
         val database = (context.applicationContext as ScheduleApplication).database
         val snapshot = database.read()
         val courses = OccurrenceEngine.onDate(snapshot, LocalDate.now())
+            .filter { it.course.marker != CourseMarker.FINISHED }
         val text = if (courses.isEmpty()) {
             "今天没有课程"
         } else {

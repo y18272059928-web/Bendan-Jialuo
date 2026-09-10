@@ -25,7 +25,9 @@ class ScheduleDatabase(context: Context) :
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
                 teacher TEXT NOT NULL,
-                color_argb INTEGER NOT NULL
+                color_argb INTEGER NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                marker TEXT NOT NULL DEFAULT 'NORMAL'
             )""".trimIndent(),
         )
         db.execSQL(
@@ -50,7 +52,12 @@ class ScheduleDatabase(context: Context) :
         db.setForeignKeyConstraintsEnabled(true)
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE course ADD COLUMN note TEXT NOT NULL DEFAULT ''")
+            db.execSQL("ALTER TABLE course ADD COLUMN marker TEXT NOT NULL DEFAULT 'NORMAL'")
+        }
+    }
 
     fun hasSchedule(): Boolean = readableDatabase.rawQuery(
         "SELECT EXISTS(SELECT 1 FROM semester LIMIT 1)",
@@ -71,12 +78,21 @@ class ScheduleDatabase(context: Context) :
             )
         }
         val courses = readableDatabase.rawQuery(
-            "SELECT id,name,teacher,color_argb FROM course ORDER BY id",
+            "SELECT id,name,teacher,color_argb,note,marker FROM course ORDER BY id",
             null,
         ).use { cursor ->
             buildList {
                 while (cursor.moveToNext()) {
-                    add(Course(cursor.getLong(0), cursor.getString(1), cursor.getString(2), cursor.getLong(3)))
+                    add(
+                        Course(
+                            id = cursor.getLong(0),
+                            name = cursor.getString(1),
+                            teacher = cursor.getString(2),
+                            colorArgb = cursor.getLong(3),
+                            note = cursor.getString(4),
+                            marker = CourseMarker.fromStorage(cursor.getString(5)),
+                        ),
+                    )
                 }
             }
         }
@@ -124,6 +140,8 @@ class ScheduleDatabase(context: Context) :
                     put("name", course.name)
                     put("teacher", course.teacher)
                     put("color_argb", course.colorArgb)
+                    put("note", course.note)
+                    put("marker", course.marker.name)
                 })
             }
             snapshot.meetings.forEach { meeting ->
@@ -144,7 +162,7 @@ class ScheduleDatabase(context: Context) :
 
     companion object {
         private const val DATABASE_NAME = "schedule.db"
-        private const val DATABASE_VERSION = 1
+        private const val DATABASE_VERSION = 2
 
         fun encodeWeeks(weeks: Set<Int>): String = weeks.sorted().joinToString(",")
         fun decodeWeeks(value: String): Set<Int> = value.split(',')
