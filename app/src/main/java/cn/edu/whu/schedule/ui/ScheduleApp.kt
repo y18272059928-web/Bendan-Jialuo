@@ -23,11 +23,11 @@ import android.webkit.WebStorage
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -41,13 +41,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.CalendarMonth
-import androidx.compose.material.icons.outlined.ChevronLeft
-import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Today
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -65,7 +62,6 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -82,10 +78,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import cn.edu.whu.schedule.data.CourseOccurrence
+import cn.edu.whu.schedule.data.CourseMarker
 import cn.edu.whu.schedule.BuildConfig
 import cn.edu.whu.schedule.data.ScheduleDatabase
 import cn.edu.whu.schedule.data.ScheduleSnapshot
 import cn.edu.whu.schedule.domain.OccurrenceEngine
+import cn.edu.whu.schedule.domain.ScheduleEditor
 import cn.edu.whu.schedule.importer.AdaptiveWhuScheduleImporter
 import cn.edu.whu.schedule.importer.ImportResult
 import cn.edu.whu.schedule.importer.WHU_CAPTURE_SCRIPT
@@ -94,8 +92,6 @@ import cn.edu.whu.schedule.importer.WHU_PORTAL_READ_SCRIPT
 import cn.edu.whu.schedule.notification.ReminderScheduler
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
-import java.time.temporal.TemporalAdjusters
-import java.time.DayOfWeek
 
 private enum class Destination(val label: String) {
     TODAY("今天"), WEEK("周课表"), MINE("我的"),
@@ -120,6 +116,16 @@ fun ScheduleApp(database: ScheduleDatabase) {
     var selected by remember { mutableStateOf(Destination.TODAY) }
     var showImport by remember { mutableStateOf(false) }
     var snapshot by remember { mutableStateOf(database.read()) }
+    var editingTarget by remember { mutableStateOf<CourseEditTarget?>(null) }
+    var showEditor by remember { mutableStateOf(false) }
+
+    fun persist(updated: ScheduleSnapshot) {
+        database.replace(updated)
+        snapshot = database.read()
+        if (snapshot.remindersCanRun()) {
+            ReminderScheduler.rescheduleAll(context, snapshot)
+        } else ReminderScheduler.pauseAll(context)
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -171,19 +177,20 @@ fun ScheduleApp(database: ScheduleDatabase) {
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
             when (selected) {
-                Destination.TODAY -> TodayScreen(snapshot)
-                Destination.WEEK -> WeekScreen(snapshot)
+                Destination.TODAY -> TodayScreen(snapshot) { target ->
+                    editingTarget = target
+                    showEditor = true
+                }
+                Destination.WEEK -> ClassicWeekScreen(
+                    snapshot = snapshot,
+                    onAdd = { editingTarget = null; showEditor = true },
+                    onEdit = { editingTarget = it; showEditor = true },
+                )
                 Destination.MINE -> if (showImport) {
                     ImportScreen(
                         onClose = { showImport = false },
                         onImported = {
-                            database.replace(it)
-                            snapshot = database.read()
-                            if (!snapshot.semester.name.contains("首周待确认")) {
-                                ReminderScheduler.rescheduleAll(context, snapshot)
-                            } else {
-                                ReminderScheduler.pauseAll(context)
-                            }
+                            persist(ScheduleEditor.preserveUserMetadata(it, snapshot))
                             showImport = false
                         },
                     )
@@ -191,20 +198,37 @@ fun ScheduleApp(database: ScheduleDatabase) {
                     MyScreen(
                         snapshot = snapshot,
                         onImport = { showImport = true },
-                        onScheduleChanged = { updated ->
-                            database.replace(updated)
-                            snapshot = database.read()
-                            ReminderScheduler.rescheduleAll(context, snapshot)
-                        },
+                        onAddCourse = { editingTarget = null; showEditor = true },
+                        onScheduleChanged = ::persist,
                     )
                 }
             }
         }
     }
+    if (showEditor) {
+        CourseEditorDialog(
+            snapshot = snapshot,
+            target = editingTarget,
+            onDismiss = { showEditor = false },
+            onSave = { course, meeting ->
+                persist(ScheduleEditor.upsert(snapshot, course, meeting))
+                showEditor = false
+            },
+            onDelete = editingTarget?.let {
+                { meetingId ->
+                    persist(ScheduleEditor.deleteMeeting(snapshot, meetingId))
+                    showEditor = false
+                }
+            },
+        )
+    }
 }
 
 @Composable
-private fun TodayScreen(snapshot: ScheduleSnapshot) {
+private fun TodayScreen(
+    snapshot: ScheduleSnapshot,
+    onEdit: (CourseEditTarget) -> Unit,
+) {
     val today = LocalDate.now()
     val occurrences = OccurrenceEngine.onDate(snapshot, today)
     val week = OccurrenceEngine.teachingWeek(snapshot, today)
@@ -217,7 +241,9 @@ private fun TodayScreen(snapshot: ScheduleSnapshot) {
         if (occurrences.isEmpty()) {
             EmptyDay()
         } else {
-            occurrences.forEach { CourseCard(it) }
+            occurrences.forEach {
+                CourseCard(it) { onEdit(CourseEditTarget(it.course, it.meeting)) }
+            }
         }
     }
 }
@@ -234,81 +260,26 @@ private fun EmptyDay() {
 }
 
 @Composable
-private fun CourseCard(occurrence: CourseOccurrence) {
+private fun CourseCard(
+    occurrence: CourseOccurrence,
+    onClick: () -> Unit,
+) {
     val accent = Color(occurrence.course.colorArgb)
-    Card(Modifier.fillMaxWidth()) {
+    Card(Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Row(Modifier.fillMaxWidth().padding(16.dp)) {
-            Box(Modifier.width(5.dp).height(68.dp).background(accent, RoundedCornerShape(4.dp)))
+            Box(Modifier.width(5.dp).height(if (occurrence.course.note.isBlank()) 76.dp else 100.dp).background(accent, RoundedCornerShape(4.dp)))
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
+                if (occurrence.course.marker != CourseMarker.NORMAL) {
+                    Text(occurrence.course.marker.label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
+                }
                 Text(occurrence.course.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Text("${occurrence.meeting.startTime}–${occurrence.meeting.endTime}  ·  ${occurrence.meeting.room}")
                 Text("${occurrence.course.teacher}  ·  第${occurrence.meeting.startPeriod}–${occurrence.meeting.endPeriod}节", style = MaterialTheme.typography.bodySmall)
-            }
-        }
-    }
-}
-
-@Composable
-private fun WeekScreen(snapshot: ScheduleSnapshot) {
-    val today = LocalDate.now()
-    val currentMonday = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
-    var weekOffset by remember { mutableIntStateOf(0) }
-    val monday = currentMonday.plusWeeks(weekOffset.toLong())
-    var selectedDay by remember { mutableIntStateOf(today.dayOfWeek.value - 1) }
-    val date = monday.plusDays(selectedDay.toLong())
-    val courses = OccurrenceEngine.onDate(snapshot, date)
-
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { weekOffset-- }) {
-                Icon(Icons.Outlined.ChevronLeft, contentDescription = "上一周")
-            }
-            Text(
-                OccurrenceEngine.teachingWeek(snapshot, monday)?.let { "教学第 $it 周" } ?: "非教学周",
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.titleMedium,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-            )
-            IconButton(onClick = { weekOffset++ }) {
-                Icon(Icons.Outlined.ChevronRight, contentDescription = "下一周")
-            }
-        }
-        Row(
-            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            (0..6).forEach { offset ->
-                val day = monday.plusDays(offset.toLong())
-                Button(
-                    onClick = { selectedDay = offset },
-                    contentPadding = PaddingValues(horizontal = 15.dp, vertical = 8.dp),
-                    colors = if (selectedDay == offset) {
-                        ButtonDefaults.buttonColors()
-                    } else {
-                        ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    },
-                ) {
-                    Text("${"一二三四五六日"[offset]}\n${day.dayOfMonth}")
+                if (occurrence.course.note.isNotBlank()) {
+                    Text("备注：${occurrence.course.note}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
                 }
             }
-        }
-        if (weekOffset != 0) {
-            OutlinedButton(onClick = {
-                weekOffset = 0
-                selectedDay = today.dayOfWeek.value - 1
-            }) { Text("回到本周") }
-        }
-        Spacer(Modifier.height(16.dp))
-        Text(date.format(DateTimeFormatter.ofPattern("M月d日")), style = MaterialTheme.typography.titleLarge)
-        Spacer(Modifier.height(10.dp))
-        if (courses.isEmpty()) Text("这一天没有课程", color = MaterialTheme.colorScheme.secondary)
-        courses.forEach {
-            CourseCard(it)
-            Spacer(Modifier.height(10.dp))
         }
     }
 }
@@ -759,6 +730,7 @@ private class SameViewWebChromeClient(
 private fun MyScreen(
     snapshot: ScheduleSnapshot,
     onImport: () -> Unit,
+    onAddCourse: () -> Unit,
     onScheduleChanged: (ScheduleSnapshot) -> Unit,
 ) {
     val context = LocalContext.current
@@ -807,6 +779,15 @@ private fun MyScreen(
                     Text("从智慧珞珈导入课表")
                 }
                 Text("重新导入会先显示预览，确认后才覆盖当前课表。", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("手动管理", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("点击周课表中的彩色课程块即可修改；也可以在这里新建一门课程。")
+                Button(onClick = onAddCourse, modifier = Modifier.fillMaxWidth()) {
+                    Text("手动添加课程")
+                }
             }
         }
         Card(Modifier.fillMaxWidth()) {

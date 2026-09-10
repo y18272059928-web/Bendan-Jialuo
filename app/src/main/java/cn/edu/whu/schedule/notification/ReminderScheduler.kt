@@ -9,6 +9,7 @@ import android.content.Intent
 import android.os.Build
 import androidx.core.content.edit
 import cn.edu.whu.schedule.data.CourseOccurrence
+import cn.edu.whu.schedule.data.CourseMarker
 import cn.edu.whu.schedule.data.ScheduleSnapshot
 import cn.edu.whu.schedule.domain.CourseReminderPlanner
 import cn.edu.whu.schedule.domain.DailyReminderPlanner
@@ -48,6 +49,7 @@ object ReminderScheduler {
         CourseReminderPlanner.window(snapshot, now.toLocalDate())?.let { window ->
             OccurrenceEngine.between(snapshot, window.startInclusive, window.endInclusive)
                 .asSequence()
+                .filter { it.course.marker != CourseMarker.FINISHED }
                 .filter { it.startsAt.minusMinutes(reminderMinutes).isAfter(now) }
                 .forEach { requestCodes += scheduleCourse(context, it, reminderMinutes) }
         }
