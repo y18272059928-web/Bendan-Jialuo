@@ -2,6 +2,8 @@ package cn.edu.whu.schedule.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -27,10 +29,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -51,8 +51,11 @@ import cn.edu.whu.schedule.domain.WhuPeriodTimes
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.temporal.TemporalAdjusters
+import kotlinx.coroutines.launch
 
 private const val PERIOD_COUNT = 13
+private const val WEEK_PAGE_COUNT = 10_001
+private const val WEEK_PAGE_CENTER = WEEK_PAGE_COUNT / 2
 private val HeaderHeight = 40.dp
 private val TimeColumnWidth = 34.dp
 
@@ -64,24 +67,30 @@ fun ClassicWeekScreen(
 ) {
     val today = LocalDate.now()
     val currentMonday = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
-    var weekOffset by remember { mutableIntStateOf(0) }
+    val pagerState = rememberPagerState(
+        initialPage = WEEK_PAGE_CENTER,
+        pageCount = { WEEK_PAGE_COUNT },
+    )
+    val scope = rememberCoroutineScope()
+    val weekOffset = pagerState.currentPage - WEEK_PAGE_CENTER
     val monday = currentMonday.plusWeeks(weekOffset.toLong())
-    val occurrences = remember(snapshot, monday) {
-        (0..6).flatMap { day ->
-            OccurrenceEngine.onDate(snapshot, monday.plusDays(day.toLong()))
-        }
-    }
 
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier.fillMaxWidth().height(50.dp).padding(horizontal = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = { weekOffset-- }) {
+            IconButton(onClick = {
+                scope.launch {
+                    pagerState.animateScrollToPage((pagerState.currentPage - 1).coerceAtLeast(0))
+                }
+            }) {
                 Icon(Icons.Outlined.ChevronLeft, contentDescription = "上一周")
             }
             Column(
-                Modifier.weight(1f).clickable(enabled = weekOffset != 0) { weekOffset = 0 },
+                Modifier.weight(1f).clickable(enabled = weekOffset != 0) {
+                    scope.launch { pagerState.animateScrollToPage(WEEK_PAGE_CENTER) }
+                },
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(
@@ -97,7 +106,13 @@ fun ClassicWeekScreen(
                     maxLines = 1,
                 )
             }
-            IconButton(onClick = { weekOffset++ }) {
+            IconButton(onClick = {
+                scope.launch {
+                    pagerState.animateScrollToPage(
+                        (pagerState.currentPage + 1).coerceAtMost(WEEK_PAGE_COUNT - 1),
+                    )
+                }
+            }) {
                 Icon(Icons.Outlined.ChevronRight, contentDescription = "下一周")
             }
             Button(
@@ -110,26 +125,53 @@ fun ClassicWeekScreen(
             }
         }
 
-        BoxWithConstraints(Modifier.fillMaxSize()) {
-            val dayColumnWidth = (maxWidth - TimeColumnWidth) / 7
-            val gridHeight = maxHeight - HeaderHeight
-            val periodRowHeight = gridHeight / PERIOD_COUNT
-
-            Column(Modifier.fillMaxSize()) {
-                WeekHeader(
-                    monday = monday,
-                    today = today,
-                    dayColumnWidth = dayColumnWidth,
-                )
-                TimetableGrid(
-                    occurrences = occurrences,
-                    timeColumnWidth = TimeColumnWidth,
-                    dayColumnWidth = dayColumnWidth,
-                    periodRowHeight = periodRowHeight,
-                    modifier = Modifier.fillMaxWidth().height(gridHeight),
-                    onEdit = onEdit,
-                )
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize(),
+            beyondViewportPageCount = 1,
+        ) { page ->
+            val pageMonday = currentMonday.plusWeeks((page - WEEK_PAGE_CENTER).toLong())
+            val occurrences = remember(snapshot, pageMonday) {
+                (0..6).flatMap { day ->
+                    OccurrenceEngine.onDate(snapshot, pageMonday.plusDays(day.toLong()))
+                }
             }
+            WeekPage(
+                monday = pageMonday,
+                today = today,
+                occurrences = occurrences,
+                onEdit = onEdit,
+            )
+        }
+    }
+}
+
+@Composable
+private fun WeekPage(
+    monday: LocalDate,
+    today: LocalDate,
+    occurrences: List<CourseOccurrence>,
+    onEdit: (CourseEditTarget) -> Unit,
+) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val dayColumnWidth = (maxWidth - TimeColumnWidth) / 7
+        val gridHeight = maxHeight - HeaderHeight
+        val periodRowHeight = gridHeight / PERIOD_COUNT
+
+        Column(Modifier.fillMaxSize()) {
+            WeekHeader(
+                monday = monday,
+                today = today,
+                dayColumnWidth = dayColumnWidth,
+            )
+            TimetableGrid(
+                occurrences = occurrences,
+                timeColumnWidth = TimeColumnWidth,
+                dayColumnWidth = dayColumnWidth,
+                periodRowHeight = periodRowHeight,
+                modifier = Modifier.fillMaxWidth().height(gridHeight),
+                onEdit = onEdit,
+            )
         }
     }
 }
