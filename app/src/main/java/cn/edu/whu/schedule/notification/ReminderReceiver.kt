@@ -31,6 +31,7 @@ class ReminderReceiver : BroadcastReceiver() {
         when (intent.action) {
             ReminderScheduler.ACTION_COURSE -> showCourse(context, intent)
             ReminderScheduler.ACTION_DAILY -> showDaily(context)
+            ReminderScheduler.ACTION_PLANNER -> showPlanner(context, intent)
             ReminderScheduler.ACTION_TEST -> showTest(context)
         }
     }
@@ -56,6 +57,19 @@ class ReminderReceiver : BroadcastReceiver() {
             ReminderScheduler.COURSE_CHANNEL,
             "即将上课：$name",
             "$start · $room",
+        )
+    }
+
+    private fun showPlanner(context: Context, intent: Intent) {
+        val kind = intent.getStringExtra("kind").orEmpty()
+        val title = intent.getStringExtra("title").orEmpty()
+        val subtitle = intent.getStringExtra("subtitle").orEmpty()
+        notify(
+            context,
+            ReminderScheduler.notificationId("$kind:$title:$subtitle"),
+            ReminderScheduler.PLANNER_CHANNEL,
+            "$kind：$title",
+            subtitle,
         )
     }
 

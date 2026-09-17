@@ -92,6 +92,7 @@ import cn.edu.whu.schedule.importer.WHU_CAPTURE_SCRIPT
 import cn.edu.whu.schedule.importer.WHU_PORTAL_COLLECT_SCRIPT
 import cn.edu.whu.schedule.importer.WHU_PORTAL_READ_SCRIPT
 import cn.edu.whu.schedule.notification.ReminderScheduler
+import cn.edu.whu.schedule.ui.theme.AppThemeStyle
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 
@@ -114,7 +115,11 @@ private const val WHU_PORTAL_URL = "https://zhlj.whu.edu.cn/casLogin"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ScheduleApp(database: ScheduleDatabase) {
+fun ScheduleApp(
+    database: ScheduleDatabase,
+    theme: AppThemeStyle,
+    onThemeChanged: (AppThemeStyle) -> Unit,
+) {
     val context = LocalContext.current
     var selected by remember { mutableStateOf(Destination.TODAY) }
     var showImport by remember { mutableStateOf(false) }
@@ -125,9 +130,11 @@ fun ScheduleApp(database: ScheduleDatabase) {
     fun persist(updated: ScheduleSnapshot) {
         database.replace(updated)
         snapshot = database.read()
-        if (snapshot.remindersCanRun()) {
-            ReminderScheduler.rescheduleAll(context, snapshot)
-        } else ReminderScheduler.pauseAll(context)
+        ReminderScheduler.rescheduleAll(
+            context,
+            snapshot,
+            courseScheduleEnabled = snapshot.remindersCanRun(),
+        )
         DeviceCalendarSync.syncIfEnabled(context, snapshot)
     }
 
@@ -204,6 +211,8 @@ fun ScheduleApp(database: ScheduleDatabase) {
                         onImport = { showImport = true },
                         onAddCourse = { editingTarget = null; showEditor = true },
                         onScheduleChanged = ::persist,
+                        theme = theme,
+                        onThemeChanged = onThemeChanged,
                     )
                 }
             }
@@ -236,6 +245,14 @@ private fun TodayScreen(
     val today = LocalDate.now()
     val occurrences = OccurrenceEngine.onDate(snapshot, today)
     val week = OccurrenceEngine.teachingWeek(snapshot, today)
+    val holidayName = snapshot.noClassDates.firstOrNull { it.date == today }?.name
+    val dueTasks = snapshot.tasks
+        .filter { !it.completed && !it.dueAt.toLocalDate().isAfter(today) }
+        .sortedBy { it.dueAt }
+    val nearbyExams = snapshot.exams
+        .filter { !it.date.isBefore(today) && !it.date.isAfter(today.plusDays(7)) }
+        .sortedBy { it.date }
+
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -243,26 +260,63 @@ private fun TodayScreen(
         Text(today.format(DateTimeFormatter.ofPattern("M月d日 EEEE")), style = MaterialTheme.typography.headlineMedium)
         Text(week?.let { "教学第 $it 周" } ?: "当前不在教学周内", color = MaterialTheme.colorScheme.secondary)
         if (occurrences.isEmpty()) {
-            EmptyDay()
+            EmptyDay(holidayName)
         } else {
             occurrences.forEach {
                 CourseCard(it) { onEdit(CourseEditTarget(it.course, it.meeting)) }
             }
         }
-    }
-}
-
-@Composable
-private fun EmptyDay() {
-    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
-        Column(Modifier.padding(24.dp)) {
-            Text("今天没有课程", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(6.dp))
-            Text("把时间留给阅读、实验和休息。")
+        if (dueTasks.isNotEmpty() || nearbyExams.isNotEmpty()) {
+            Text("近期安排", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            dueTasks.forEach { task ->
+                PlanPreviewCard(
+                    title = "待办 · ${task.title}",
+                    subtitle = if (task.dueAt.toLocalDate().isBefore(today)) {
+                        "已逾期 · ${task.dueAt.format(DateTimeFormatter.ofPattern("M月d日 HH:mm"))}"
+                    } else {
+                        "今天 ${task.dueAt.toLocalTime()} 截止"
+                    },
+                )
+            }
+            nearbyExams.forEach { exam ->
+                PlanPreviewCard(
+                    title = "考试 · ${exam.title}",
+                    subtitle = buildList {
+                        add(exam.date.format(DateTimeFormatter.ofPattern("M月d日")))
+                        exam.startTime?.let { add(it.toString()) }
+                        if (exam.room.isNotBlank()) add(exam.room)
+                    }.joinToString(" · "),
+                )
+            }
+            Text("可在“我的 → 学业计划”中修改。", style = MaterialTheme.typography.bodySmall)
         }
     }
 }
 
+@Composable
+private fun EmptyDay(holidayName: String?) {
+    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+        Column(Modifier.padding(24.dp)) {
+            Text(
+                holidayName?.let { "今天停课 · $it" } ?: "今天没有课程",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(if (holidayName == null) "把时间留给阅读、实验和休息。" else "已自动跳过课程、课前提醒和日历同步。")
+        }
+    }
+}
+
+@Composable
+private fun PlanPreviewCard(title: String, subtitle: String) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp)) {
+            Text(title, fontWeight = FontWeight.SemiBold)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+        }
+    }
+}
 @Composable
 private fun CourseCard(
     occurrence: CourseOccurrence,
@@ -736,12 +790,15 @@ private fun MyScreen(
     onImport: () -> Unit,
     onAddCourse: () -> Unit,
     onScheduleChanged: (ScheduleSnapshot) -> Unit,
+    theme: AppThemeStyle,
+    onThemeChanged: (AppThemeStyle) -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var reminderRevision by remember { mutableStateOf(0) }
     var reminderMessage by remember { mutableStateOf("") }
     var channelEnabled by remember { mutableStateOf(ReminderScheduler.courseChannelEnabled(context)) }
+    var plannerChannelEnabled by remember { mutableStateOf(ReminderScheduler.plannerChannelEnabled(context)) }
     var calendarAllowed by remember { mutableStateOf(DeviceCalendarSync.hasPermissions(context)) }
     var calendarBusy by remember { mutableStateOf(false) }
     var calendarEnabled by remember { mutableStateOf(DeviceCalendarSync.isEnabled(context)) }
@@ -784,8 +841,9 @@ private fun MyScreen(
     ) { granted ->
         notificationsAllowed = granted
         channelEnabled = ReminderScheduler.courseChannelEnabled(context)
-        if (granted && snapshot.remindersCanRun()) {
-            ReminderScheduler.rescheduleAll(context, snapshot)
+        plannerChannelEnabled = ReminderScheduler.plannerChannelEnabled(context)
+        if (granted) {
+            ReminderScheduler.rescheduleAll(context, snapshot, courseScheduleEnabled = snapshot.remindersCanRun())
         }
         reminderRevision += 1
     }
@@ -793,8 +851,8 @@ private fun MyScreen(
         ActivityResultContracts.StartActivityForResult(),
     ) {
         exact = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarmManager.canScheduleExactAlarms()
-        if (exact && snapshot.remindersCanRun()) {
-            ReminderScheduler.rescheduleAll(context, snapshot)
+        if (exact) {
+            ReminderScheduler.rescheduleAll(context, snapshot, courseScheduleEnabled = snapshot.remindersCanRun())
         }
         reminderRevision += 1
     }
@@ -805,10 +863,14 @@ private fun MyScreen(
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
         channelEnabled = ReminderScheduler.courseChannelEnabled(context)
+        plannerChannelEnabled = ReminderScheduler.plannerChannelEnabled(context)
         reminderRevision += 1
     }
     val scheduledCount = remember(snapshot, reminderRevision) {
         ReminderScheduler.scheduledCourseCount(context)
+    }
+    val scheduledPlannerCount = remember(snapshot, reminderRevision) {
+        ReminderScheduler.scheduledPlannerCount(context)
     }
     val nextReminder = remember(snapshot, reminderRevision) {
         ReminderScheduler.nextCourseReminder(snapshot)
@@ -846,6 +908,10 @@ private fun MyScreen(
                 }
             }
         }
+        AcademicPlannerSection(
+            snapshot = snapshot,
+            onScheduleChanged = onScheduleChanged,
+        )
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("手机日历", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
@@ -879,27 +945,28 @@ private fun MyScreen(
                 Text("每日 07:30 汇总今日课程")
                 Text("每节课开始前 15 分钟提醒")
                 Text("已登记 $scheduledCount 个未来课前提醒")
+                Text("已登记 $scheduledPlannerCount 个考试或待办提醒")
                 Text("下一次：$nextReminderText", color = MaterialTheme.colorScheme.primary)
                 Text(
                     when {
                         !notificationsAllowed -> "通知权限尚未开启，无法显示提醒"
                         !channelEnabled -> "课前提醒频道已被系统关闭"
-                        else -> "通知权限和课前提醒频道均已开启"
+                        !plannerChannelEnabled -> "考试与待办提醒频道已被系统关闭"
+                        else -> "课程、考试与待办通知均已开启"
                     },
                 )
                 if (!notificationsAllowed && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     Button(onClick = {
                         notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                     }) { Text("开启通知") }
-                } else if (!channelEnabled) {
+                } else if (!channelEnabled || !plannerChannelEnabled) {
                     Button(onClick = {
                         notificationSettings.launch(
-                            Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+                            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
                                 putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-                                putExtra(Settings.EXTRA_CHANNEL_ID, ReminderScheduler.COURSE_CHANNEL)
                             },
                         )
-                    }) { Text("打开课前提醒设置") }
+                    }) { Text("打开通知设置") }
                 }
                 Text(if (exact) "精确提醒权限已开启" else "精确提醒权限尚未开启，系统可能延迟通知")
                 if (!exact && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -912,7 +979,7 @@ private fun MyScreen(
                 Button(
                     onClick = {
                         if (snapshot.remindersCanRun()) {
-                            ReminderScheduler.rescheduleAll(context, snapshot)
+                            ReminderScheduler.rescheduleAll(context, snapshot, courseScheduleEnabled = snapshot.remindersCanRun())
                             reminderRevision += 1
                             reminderMessage = "已重新建立全部提醒。"
                         } else {
@@ -966,6 +1033,8 @@ private fun MyScreen(
                 }
             }
         }
+        AppearanceSection(selected = theme, onSelected = onThemeChanged)
+        UpdateSection()
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("隐私", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)

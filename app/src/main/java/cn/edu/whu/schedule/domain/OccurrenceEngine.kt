@@ -14,6 +14,7 @@ object OccurrenceEngine {
     }
 
     fun onDate(snapshot: ScheduleSnapshot, date: LocalDate): List<CourseOccurrence> {
+        if (snapshot.noClassDates.any { it.date == date }) return emptyList()
         val week = teachingWeek(snapshot, date) ?: return emptyList()
         val courses = snapshot.courses.associateBy { it.id }
         return snapshot.meetings.asSequence()

@@ -43,11 +43,51 @@ data class CourseMeeting(
     val weeks: Set<Int>,
 )
 
+data class Exam(
+    val id: Long,
+    val courseId: Long? = null,
+    val title: String,
+    val date: LocalDate,
+    val startTime: LocalTime? = null,
+    val endTime: LocalTime? = null,
+    val room: String = "",
+    val seat: String = "",
+    val note: String = "",
+)
+
+data class StudyTask(
+    val id: Long,
+    val courseId: Long? = null,
+    val title: String,
+    val dueAt: LocalDateTime,
+    val note: String = "",
+    val completed: Boolean = false,
+    val reminderMinutes: Int = 60,
+)
+
+data class NoClassDate(
+    val id: Long,
+    val date: LocalDate,
+    val name: String,
+)
+
 data class ScheduleSnapshot(
     val semester: Semester,
     val courses: List<Course>,
     val meetings: List<CourseMeeting>,
+    val exams: List<Exam> = emptyList(),
+    val tasks: List<StudyTask> = emptyList(),
+    val noClassDates: List<NoClassDate> = emptyList(),
 )
+
+fun ScheduleSnapshot.courseName(courseId: Long?): String? =
+    courseId?.let { id -> courses.firstOrNull { it.id == id }?.name }
+
+fun ScheduleSnapshot.nextPersonalItemId(): Long = sequenceOf(
+    exams.asSequence().map(Exam::id),
+    tasks.asSequence().map(StudyTask::id),
+    noClassDates.asSequence().map(NoClassDate::id),
+).flatten().maxOrNull()?.plus(1) ?: 1L
 
 data class CourseOccurrence(
     val course: Course,
