@@ -1,6 +1,7 @@
 package cn.edu.whu.schedule
 
 import android.app.Application
+import cn.edu.whu.schedule.calendar.DeviceCalendarSync
 import cn.edu.whu.schedule.data.SampleSchedule
 import cn.edu.whu.schedule.data.ScheduleDatabase
 import cn.edu.whu.schedule.notification.ReminderScheduler
@@ -18,5 +19,6 @@ class ScheduleApplication : Application() {
         if (snapshot.semester.name != "演示学期" && !snapshot.semester.name.contains("首周待确认")) {
             ReminderScheduler.rescheduleAll(this, snapshot)
         }
+        DeviceCalendarSync.syncIfEnabled(this, snapshot)
     }
 }

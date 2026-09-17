@@ -31,7 +31,18 @@ class ReminderReceiver : BroadcastReceiver() {
         when (intent.action) {
             ReminderScheduler.ACTION_COURSE -> showCourse(context, intent)
             ReminderScheduler.ACTION_DAILY -> showDaily(context)
+            ReminderScheduler.ACTION_TEST -> showTest(context)
         }
+    }
+
+    private fun showTest(context: Context) {
+        notify(
+            context,
+            TEST_ID,
+            ReminderScheduler.COURSE_CHANNEL,
+            "提醒测试成功",
+            "笨蛋珞珈可以正常发送课程提醒。",
+        )
     }
 
     private fun showCourse(context: Context, intent: Intent) {
@@ -83,5 +94,6 @@ class ReminderReceiver : BroadcastReceiver() {
 
     companion object {
         private const val DAILY_ID = 731
+        private const val TEST_ID = 732
     }
 }

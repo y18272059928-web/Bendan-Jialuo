@@ -18,11 +18,17 @@ import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.ZoneId
 
+data class NextCourseReminder(
+    val occurrence: CourseOccurrence,
+    val triggerAt: LocalDateTime,
+)
+
 object ReminderScheduler {
     const val COURSE_CHANNEL = "course_reminders"
     const val DAILY_CHANNEL = "daily_summary"
     const val ACTION_COURSE = "cn.edu.whu.schedule.COURSE_REMINDER"
     const val ACTION_DAILY = "cn.edu.whu.schedule.DAILY_SUMMARY"
+    const val ACTION_TEST = "cn.edu.whu.schedule.TEST_REMINDER"
 
     fun createNotificationChannels(context: Context) {
         val manager = context.getSystemService(NotificationManager::class.java)
@@ -55,6 +61,7 @@ object ReminderScheduler {
         }
         reminderPreferences(context).edit {
             putString(KEY_COURSE_REQUEST_CODES, requestCodes.joinToString(","))
+            putInt(KEY_SCHEDULED_COURSE_COUNT, requestCodes.size)
         }
         scheduleNextDailySummary(context, snapshot)
     }
@@ -62,7 +69,38 @@ object ReminderScheduler {
     fun pauseAll(context: Context) {
         cancelScheduledCourses(context)
         cancelDailySummary(context)
-        reminderPreferences(context).edit { remove(KEY_COURSE_REQUEST_CODES) }
+        reminderPreferences(context).edit {
+            remove(KEY_COURSE_REQUEST_CODES)
+            putInt(KEY_SCHEDULED_COURSE_COUNT, 0)
+        }
+    }
+
+    fun scheduledCourseCount(context: Context): Int =
+        reminderPreferences(context).getInt(KEY_SCHEDULED_COURSE_COUNT, 0)
+
+    fun courseChannelEnabled(context: Context): Boolean =
+        context.getSystemService(NotificationManager::class.java)
+            .getNotificationChannel(COURSE_CHANNEL)
+            ?.importance != NotificationManager.IMPORTANCE_NONE
+
+    fun sendTestNotification(context: Context) {
+        context.sendBroadcast(
+            Intent(context, ReminderReceiver::class.java).apply { action = ACTION_TEST },
+        )
+    }
+
+    fun nextCourseReminder(
+        snapshot: ScheduleSnapshot,
+        reminderMinutes: Long = 15,
+        now: LocalDateTime = LocalDateTime.now(),
+    ): NextCourseReminder? {
+        val window = CourseReminderPlanner.window(snapshot, now.toLocalDate()) ?: return null
+        return OccurrenceEngine.between(snapshot, window.startInclusive, window.endInclusive)
+            .asSequence()
+            .filter { it.course.marker != CourseMarker.FINISHED }
+            .map { NextCourseReminder(it, it.startsAt.minusMinutes(reminderMinutes)) }
+            .filter { it.triggerAt.isAfter(now) }
+            .minByOrNull { it.triggerAt }
     }
 
     private fun scheduleCourse(context: Context, occurrence: CourseOccurrence, reminderMinutes: Long): Int {
@@ -155,4 +193,5 @@ object ReminderScheduler {
 
     private const val DAILY_REQUEST_CODE = 730
     private const val KEY_COURSE_REQUEST_CODES = "course_request_codes"
+    private const val KEY_SCHEDULED_COURSE_COUNT = "scheduled_course_count"
 }

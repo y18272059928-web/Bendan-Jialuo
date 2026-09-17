@@ -55,6 +55,7 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -75,6 +76,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import cn.edu.whu.schedule.calendar.DeviceCalendarSync
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import cn.edu.whu.schedule.data.CourseOccurrence
@@ -93,6 +95,7 @@ import cn.edu.whu.schedule.notification.ReminderScheduler
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 
+import kotlinx.coroutines.launch
 private enum class Destination(val label: String) {
     TODAY("今天"), WEEK("周课表"), MINE("我的"),
 }
@@ -125,6 +128,7 @@ fun ScheduleApp(database: ScheduleDatabase) {
         if (snapshot.remindersCanRun()) {
             ReminderScheduler.rescheduleAll(context, snapshot)
         } else ReminderScheduler.pauseAll(context)
+        DeviceCalendarSync.syncIfEnabled(context, snapshot)
     }
 
     Scaffold(
@@ -734,6 +738,36 @@ private fun MyScreen(
     onScheduleChanged: (ScheduleSnapshot) -> Unit,
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var reminderRevision by remember { mutableStateOf(0) }
+    var reminderMessage by remember { mutableStateOf("") }
+    var channelEnabled by remember { mutableStateOf(ReminderScheduler.courseChannelEnabled(context)) }
+    var calendarAllowed by remember { mutableStateOf(DeviceCalendarSync.hasPermissions(context)) }
+    var calendarBusy by remember { mutableStateOf(false) }
+    var calendarEnabled by remember { mutableStateOf(DeviceCalendarSync.isEnabled(context)) }
+    var calendarMessage by remember {
+        mutableStateOf(
+            if (calendarEnabled) "上次已同步 ${DeviceCalendarSync.lastSyncedCount(context)} 节课程。"
+            else "尚未同步到手机日历。",
+        )
+    }
+    val runCalendarSync: () -> Unit = {
+        calendarBusy = true
+        calendarMessage = "正在同步课程…"
+        scope.launch {
+            val result = DeviceCalendarSync.sync(context, snapshot)
+            calendarBusy = false
+            calendarEnabled = result.success
+            calendarMessage = result.message
+        }
+    }
+    val calendarPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) {
+        calendarAllowed = DeviceCalendarSync.hasPermissions(context)
+        if (calendarAllowed) runCalendarSync()
+        else calendarMessage = "未获得日历权限，暂时不能同步。"
+    }
     val alarmManager = context.getSystemService(AlarmManager::class.java)
     var exact by remember {
         mutableStateOf(Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarmManager.canScheduleExactAlarms())
@@ -749,9 +783,11 @@ private fun MyScreen(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
         notificationsAllowed = granted
+        channelEnabled = ReminderScheduler.courseChannelEnabled(context)
         if (granted && snapshot.remindersCanRun()) {
             ReminderScheduler.rescheduleAll(context, snapshot)
         }
+        reminderRevision += 1
     }
     val exactAlarmPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -760,7 +796,27 @@ private fun MyScreen(
         if (exact && snapshot.remindersCanRun()) {
             ReminderScheduler.rescheduleAll(context, snapshot)
         }
+        reminderRevision += 1
     }
+    val notificationSettings = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        notificationsAllowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        channelEnabled = ReminderScheduler.courseChannelEnabled(context)
+        reminderRevision += 1
+    }
+    val scheduledCount = remember(snapshot, reminderRevision) {
+        ReminderScheduler.scheduledCourseCount(context)
+    }
+    val nextReminder = remember(snapshot, reminderRevision) {
+        ReminderScheduler.nextCourseReminder(snapshot)
+    }
+    val nextReminderText = nextReminder?.let {
+        "${it.triggerAt.format(DateTimeFormatter.ofPattern("M月d日 EEE HH:mm"))} · ${it.occurrence.course.name}"
+    } ?: "未来 42 天没有待提醒课程"
+
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -792,14 +848,58 @@ private fun MyScreen(
         }
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("手机日历", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("把整学期课程写入系统日历，并为每节课添加提前 15 分钟提醒。")
+                Text(if (calendarAllowed) "日历权限已开启" else "需要读取和写入日历权限")
+                Text(calendarMessage, color = if (calendarEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary)
+                Button(
+                    enabled = !calendarBusy && snapshot.remindersCanRun(),
+                    onClick = {
+                        if (calendarAllowed) runCalendarSync()
+                        else calendarPermission.launch(
+                            arrayOf(
+                                Manifest.permission.READ_CALENDAR,
+                                Manifest.permission.WRITE_CALENDAR,
+                            ),
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (calendarBusy) "正在同步…" else if (calendarEnabled) "重新同步手机日历" else "同步到手机日历")
+                }
+                if (!snapshot.remindersCanRun()) {
+                    Text("请先确认学期首周，再同步日历。", color = MaterialTheme.colorScheme.error)
+                }
+                Text("同步后还要确保手机自带日历的通知没有被关闭。", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("提醒", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text("每日 07:30 汇总今日课程")
                 Text("每节课开始前 15 分钟提醒")
-                Text(if (notificationsAllowed) "通知权限已开启" else "通知权限尚未开启，暂时无法显示提醒")
+                Text("已登记 $scheduledCount 个未来课前提醒")
+                Text("下一次：$nextReminderText", color = MaterialTheme.colorScheme.primary)
+                Text(
+                    when {
+                        !notificationsAllowed -> "通知权限尚未开启，无法显示提醒"
+                        !channelEnabled -> "课前提醒频道已被系统关闭"
+                        else -> "通知权限和课前提醒频道均已开启"
+                    },
+                )
                 if (!notificationsAllowed && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     Button(onClick = {
                         notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                     }) { Text("开启通知") }
+                } else if (!channelEnabled) {
+                    Button(onClick = {
+                        notificationSettings.launch(
+                            Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+                                putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                                putExtra(Settings.EXTRA_CHANNEL_ID, ReminderScheduler.COURSE_CHANNEL)
+                            },
+                        )
+                    }) { Text("打开课前提醒设置") }
                 }
                 Text(if (exact) "精确提醒权限已开启" else "精确提醒权限尚未开启，系统可能延迟通知")
                 if (!exact && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -809,6 +909,30 @@ private fun MyScreen(
                         )
                     }) { Text("开启精确提醒") }
                 }
+                Button(
+                    onClick = {
+                        if (snapshot.remindersCanRun()) {
+                            ReminderScheduler.rescheduleAll(context, snapshot)
+                            reminderRevision += 1
+                            reminderMessage = "已重新建立全部提醒。"
+                        } else {
+                            reminderMessage = "请先确认学期首周。"
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("重新建立全部提醒") }
+                OutlinedButton(
+                    enabled = notificationsAllowed && channelEnabled,
+                    onClick = {
+                        ReminderScheduler.sendTestNotification(context)
+                        reminderMessage = "测试提醒已发出；如果没有看到，请检查系统通知和后台运行限制。"
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("发送测试提醒") }
+                if (reminderMessage.isNotBlank()) {
+                    Text(reminderMessage, style = MaterialTheme.typography.bodySmall)
+                }
+                Text("若测试成功但定时提醒仍缺失，请允许应用后台运行，并关闭省电限制。", style = MaterialTheme.typography.bodySmall)
             }
         }
         Card(Modifier.fillMaxWidth()) {

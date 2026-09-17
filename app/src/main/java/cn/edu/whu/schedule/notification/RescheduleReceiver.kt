@@ -1,5 +1,7 @@
 package cn.edu.whu.schedule.notification
 
+import android.app.AlarmManager
+
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -12,6 +14,7 @@ class RescheduleReceiver : BroadcastReceiver() {
             Intent.ACTION_TIME_CHANGED,
             Intent.ACTION_TIMEZONE_CHANGED,
             Intent.ACTION_MY_PACKAGE_REPLACED,
+            AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED,
         )
         if (intent.action !in allowedActions) return
         val application = context.applicationContext as ScheduleApplication
