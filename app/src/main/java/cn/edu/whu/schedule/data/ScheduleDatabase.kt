@@ -6,6 +6,7 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import androidx.core.database.sqlite.transaction
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.LocalTime
 
 class ScheduleDatabase(context: Context) :
@@ -45,6 +46,7 @@ class ScheduleDatabase(context: Context) :
             )""".trimIndent(),
         )
         db.execSQL("CREATE INDEX meeting_course_id ON meeting(course_id)")
+        createPersonalTables(db)
     }
 
     override fun onConfigure(db: SQLiteDatabase) {
@@ -57,6 +59,7 @@ class ScheduleDatabase(context: Context) :
             db.execSQL("ALTER TABLE course ADD COLUMN note TEXT NOT NULL DEFAULT ''")
             db.execSQL("ALTER TABLE course ADD COLUMN marker TEXT NOT NULL DEFAULT 'NORMAL'")
         }
+        if (oldVersion < 3) createPersonalTables(db)
     }
 
     fun hasSchedule(): Boolean = readableDatabase.rawQuery(
@@ -65,7 +68,8 @@ class ScheduleDatabase(context: Context) :
     ).use { cursor -> cursor.moveToFirst() && cursor.getInt(0) == 1 }
 
     fun read(): ScheduleSnapshot {
-        val semester = readableDatabase.rawQuery(
+        val db = readableDatabase
+        val semester = db.rawQuery(
             "SELECT id,name,first_monday,total_weeks FROM semester LIMIT 1",
             null,
         ).use { cursor ->
@@ -77,7 +81,7 @@ class ScheduleDatabase(context: Context) :
                 totalWeeks = cursor.getInt(3),
             )
         }
-        val courses = readableDatabase.rawQuery(
+        val courses = db.rawQuery(
             "SELECT id,name,teacher,color_argb,note,marker FROM course ORDER BY id",
             null,
         ).use { cursor ->
@@ -96,7 +100,7 @@ class ScheduleDatabase(context: Context) :
                 }
             }
         }
-        val meetings = readableDatabase.rawQuery(
+        val meetings = db.rawQuery(
             """SELECT id,course_id,room,day_of_week,start_period,end_period,
                 start_time,end_time,weeks FROM meeting ORDER BY day_of_week,start_time""".trimIndent(),
             null,
@@ -119,11 +123,66 @@ class ScheduleDatabase(context: Context) :
                 }
             }
         }
-        return ScheduleSnapshot(semester, courses, meetings)
+        val exams = db.rawQuery(
+            "SELECT id,course_id,title,exam_date,start_time,end_time,room,seat,note FROM exam ORDER BY exam_date,start_time",
+            null,
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) {
+                    add(
+                        Exam(
+                            id = cursor.getLong(0),
+                            courseId = cursor.getNullableLong(1),
+                            title = cursor.getString(2),
+                            date = LocalDate.parse(cursor.getString(3)),
+                            startTime = cursor.getNullableString(4)?.let(LocalTime::parse),
+                            endTime = cursor.getNullableString(5)?.let(LocalTime::parse),
+                            room = cursor.getString(6),
+                            seat = cursor.getString(7),
+                            note = cursor.getString(8),
+                        ),
+                    )
+                }
+            }
+        }
+        val tasks = db.rawQuery(
+            "SELECT id,course_id,title,due_at,note,completed,reminder_minutes FROM study_task ORDER BY completed,due_at",
+            null,
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) {
+                    add(
+                        StudyTask(
+                            id = cursor.getLong(0),
+                            courseId = cursor.getNullableLong(1),
+                            title = cursor.getString(2),
+                            dueAt = LocalDateTime.parse(cursor.getString(3)),
+                            note = cursor.getString(4),
+                            completed = cursor.getInt(5) != 0,
+                            reminderMinutes = cursor.getInt(6),
+                        ),
+                    )
+                }
+            }
+        }
+        val noClassDates = db.rawQuery(
+            "SELECT id,date,name FROM no_class_date ORDER BY date",
+            null,
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) {
+                    add(NoClassDate(cursor.getLong(0), LocalDate.parse(cursor.getString(1)), cursor.getString(2)))
+                }
+            }
+        }
+        return ScheduleSnapshot(semester, courses, meetings, exams, tasks, noClassDates)
     }
 
     fun replace(snapshot: ScheduleSnapshot) {
         writableDatabase.transaction {
+            delete("exam", null, null)
+            delete("study_task", null, null)
+            delete("no_class_date", null, null)
             delete("meeting", null, null)
             delete("course", null, null)
             delete("semester", null, null)
@@ -157,12 +216,79 @@ class ScheduleDatabase(context: Context) :
                     put("weeks", encodeWeeks(meeting.weeks))
                 })
             }
+            snapshot.exams.forEach { exam ->
+                insertOrThrow("exam", null, ContentValues().apply {
+                    putNullableLong("course_id", exam.courseId)
+                    put("id", exam.id)
+                    put("title", exam.title)
+                    put("exam_date", exam.date.toString())
+                    putNullableString("start_time", exam.startTime?.toString())
+                    putNullableString("end_time", exam.endTime?.toString())
+                    put("room", exam.room)
+                    put("seat", exam.seat)
+                    put("note", exam.note)
+                })
+            }
+            snapshot.tasks.forEach { task ->
+                insertOrThrow("study_task", null, ContentValues().apply {
+                    putNullableLong("course_id", task.courseId)
+                    put("id", task.id)
+                    put("title", task.title)
+                    put("due_at", task.dueAt.toString())
+                    put("note", task.note)
+                    put("completed", if (task.completed) 1 else 0)
+                    put("reminder_minutes", task.reminderMinutes)
+                })
+            }
+            snapshot.noClassDates.forEach { holiday ->
+                insertOrThrow("no_class_date", null, ContentValues().apply {
+                    put("id", holiday.id)
+                    put("date", holiday.date.toString())
+                    put("name", holiday.name)
+                })
+            }
         }
     }
 
     companion object {
         private const val DATABASE_NAME = "schedule.db"
-        private const val DATABASE_VERSION = 2
+        private const val DATABASE_VERSION = 3
+
+        private fun createPersonalTables(db: SQLiteDatabase) {
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS exam(
+                    id INTEGER PRIMARY KEY,
+                    course_id INTEGER,
+                    title TEXT NOT NULL,
+                    exam_date TEXT NOT NULL,
+                    start_time TEXT,
+                    end_time TEXT,
+                    room TEXT NOT NULL DEFAULT '',
+                    seat TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT '',
+                    FOREIGN KEY(course_id) REFERENCES course(id) ON DELETE SET NULL
+                )""".trimIndent(),
+            )
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS study_task(
+                    id INTEGER PRIMARY KEY,
+                    course_id INTEGER,
+                    title TEXT NOT NULL,
+                    due_at TEXT NOT NULL,
+                    note TEXT NOT NULL DEFAULT '',
+                    completed INTEGER NOT NULL DEFAULT 0,
+                    reminder_minutes INTEGER NOT NULL DEFAULT 60,
+                    FOREIGN KEY(course_id) REFERENCES course(id) ON DELETE SET NULL
+                )""".trimIndent(),
+            )
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS no_class_date(
+                    id INTEGER PRIMARY KEY,
+                    date TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL
+                )""".trimIndent(),
+            )
+        }
 
         fun encodeWeeks(weeks: Set<Int>): String = weeks.sorted().joinToString(",")
         fun decodeWeeks(value: String): Set<Int> = value.split(',')
@@ -170,4 +296,18 @@ class ScheduleDatabase(context: Context) :
             .filter { it > 0 }
             .toSet()
     }
+}
+
+private fun android.database.Cursor.getNullableLong(index: Int): Long? =
+    if (isNull(index)) null else getLong(index)
+
+private fun android.database.Cursor.getNullableString(index: Int): String? =
+    if (isNull(index)) null else getString(index)
+
+private fun ContentValues.putNullableLong(key: String, value: Long?) {
+    if (value == null) putNull(key) else put(key, value)
+}
+
+private fun ContentValues.putNullableString(key: String, value: String?) {
+    if (value == null) putNull(key) else put(key, value)
 }

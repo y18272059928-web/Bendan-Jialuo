@@ -51,4 +51,13 @@ class OccurrenceEngineTest {
         val result = OccurrenceEngine.onDate(unordered, LocalDate.of(2026, 9, 8))
         assertEquals(listOf(LocalTime.of(8, 0), LocalTime.of(14, 0)), result.map { it.meeting.startTime })
     }
-}
+
+    @Test
+    fun noClassDateSuppressesCourseOccurrence() {
+        val date = LocalDate.of(2026, 9, 8)
+        val holiday = snapshot.copy(
+            noClassDates = listOf(cn.edu.whu.schedule.data.NoClassDate(1, date, "停课")),
+        )
+
+        assertEquals(0, OccurrenceEngine.onDate(holiday, date).size)
+    }}

@@ -83,6 +83,68 @@ class ScheduleEditorTest {
     }
 
     @Test
+    fun deletingLastMeetingKeepsPersonalItemsButUnlinksRemovedCourse() {
+        val snapshot = base.copy(
+            exams = listOf(
+                cn.edu.whu.schedule.data.Exam(
+                    id = 1,
+                    courseId = 1,
+                    title = "网络安全考试",
+                    date = LocalDate.of(2026, 12, 20),
+                ),
+            ),
+            tasks = listOf(
+                cn.edu.whu.schedule.data.StudyTask(
+                    id = 2,
+                    courseId = 1,
+                    title = "完成实验",
+                    dueAt = java.time.LocalDateTime.of(2026, 10, 1, 20, 0),
+                ),
+            ),
+        )
+
+        val result = ScheduleEditor.deleteMeeting(snapshot, 1)
+
+        assertTrue(result.courses.isEmpty())
+        assertEquals(null, result.exams.single().courseId)
+        assertEquals(null, result.tasks.single().courseId)
+    }
+
+    @Test
+    fun reimportPreservesPersonalPlansAndRemapsCourseLinks() {
+        val previous = base.copy(
+            exams = listOf(
+                cn.edu.whu.schedule.data.Exam(
+                    id = 5,
+                    courseId = 1,
+                    title = "期末考试",
+                    date = LocalDate.of(2026, 12, 20),
+                ),
+            ),
+            tasks = listOf(
+                cn.edu.whu.schedule.data.StudyTask(
+                    id = 6,
+                    courseId = 1,
+                    title = "课程论文",
+                    dueAt = java.time.LocalDateTime.of(2026, 12, 1, 20, 0),
+                ),
+            ),
+            noClassDates = listOf(
+                cn.edu.whu.schedule.data.NoClassDate(7, LocalDate.of(2026, 10, 1), "国庆节"),
+            ),
+        )
+        val imported = base.copy(
+            courses = listOf(base.courses.single().copy(id = 88)),
+            meetings = listOf(meeting(id = 99, courseId = 88, day = 3)),
+        )
+
+        val result = ScheduleEditor.preserveUserMetadata(imported, previous)
+
+        assertEquals(88L, result.exams.single().courseId)
+        assertEquals(88L, result.tasks.single().courseId)
+        assertEquals("国庆节", result.noClassDates.single().name)
+    }
+    @Test
     fun periodTimesMatchWhuSchedule() {
         assertEquals("08:00", WhuPeriodTimes.start(1).toString())
         assertEquals("20:55", WhuPeriodTimes.end(13).toString())

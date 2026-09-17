@@ -16,9 +16,9 @@ class ScheduleApplication : Application() {
         if (!database.hasSchedule()) database.replace(SampleSchedule.create())
         ReminderScheduler.createNotificationChannels(this)
         val snapshot = database.read()
-        if (snapshot.semester.name != "演示学期" && !snapshot.semester.name.contains("首周待确认")) {
-            ReminderScheduler.rescheduleAll(this, snapshot)
-        }
+        val courseScheduleEnabled = snapshot.semester.name != "演示学期" &&
+            !snapshot.semester.name.contains("首周待确认")
+        ReminderScheduler.rescheduleAll(this, snapshot, courseScheduleEnabled = courseScheduleEnabled)
         DeviceCalendarSync.syncIfEnabled(this, snapshot)
     }
 }

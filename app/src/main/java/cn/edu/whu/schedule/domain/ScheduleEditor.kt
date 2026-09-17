@@ -55,15 +55,37 @@ object ScheduleEditor {
         } else {
             snapshot.courses
         }
-        return snapshot.copy(courses = courses, meetings = meetings)
+        val removedCourseId = deleted.courseId.takeIf { id -> meetings.none { it.courseId == id } }
+        return snapshot.copy(
+            courses = courses,
+            meetings = meetings,
+            exams = snapshot.exams.map { exam ->
+                if (exam.courseId == removedCourseId) exam.copy(courseId = null) else exam
+            },
+            tasks = snapshot.tasks.map { task ->
+                if (task.courseId == removedCourseId) task.copy(courseId = null) else task
+            },
+        )
     }
 
     fun preserveUserMetadata(imported: ScheduleSnapshot, previous: ScheduleSnapshot): ScheduleSnapshot {
-        val metadata = previous.courses.associateBy { it.name.trim().lowercase() }
-        return imported.copy(courses = imported.courses.map { course ->
-            metadata[course.name.trim().lowercase()]?.let {
-                course.copy(note = it.note, marker = it.marker)
-            } ?: course
-        })
+        fun key(name: String) = name.trim().lowercase()
+        val metadata = previous.courses.associateBy { key(it.name) }
+        val importedIds = imported.courses.associate { key(it.name) to it.id }
+        val previousNames = previous.courses.associate { it.id to key(it.name) }
+        fun remap(courseId: Long?): Long? = courseId
+            ?.let(previousNames::get)
+            ?.let(importedIds::get)
+
+        return imported.copy(
+            courses = imported.courses.map { course ->
+                metadata[key(course.name)]?.let {
+                    course.copy(note = it.note, marker = it.marker)
+                } ?: course
+            },
+            exams = previous.exams.map { it.copy(courseId = remap(it.courseId)) },
+            tasks = previous.tasks.map { it.copy(courseId = remap(it.courseId)) },
+            noClassDates = previous.noClassDates,
+        )
     }
 }

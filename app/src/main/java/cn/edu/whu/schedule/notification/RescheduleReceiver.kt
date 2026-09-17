@@ -19,8 +19,8 @@ class RescheduleReceiver : BroadcastReceiver() {
         if (intent.action !in allowedActions) return
         val application = context.applicationContext as ScheduleApplication
         val snapshot = application.database.read()
-        if (snapshot.semester.name != "演示学期" && !snapshot.semester.name.contains("首周待确认")) {
-            ReminderScheduler.rescheduleAll(context, snapshot)
-        }
+        val courseScheduleEnabled = snapshot.semester.name != "演示学期" &&
+            !snapshot.semester.name.contains("首周待确认")
+        ReminderScheduler.rescheduleAll(context, snapshot, courseScheduleEnabled = courseScheduleEnabled)
     }
 }

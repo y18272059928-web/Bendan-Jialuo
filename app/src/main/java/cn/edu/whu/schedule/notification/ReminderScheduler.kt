@@ -14,6 +14,7 @@ import cn.edu.whu.schedule.data.ScheduleSnapshot
 import cn.edu.whu.schedule.domain.CourseReminderPlanner
 import cn.edu.whu.schedule.domain.DailyReminderPlanner
 import cn.edu.whu.schedule.domain.OccurrenceEngine
+import cn.edu.whu.schedule.domain.PersonalReminderPlanner
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.ZoneId
@@ -26,8 +27,10 @@ data class NextCourseReminder(
 object ReminderScheduler {
     const val COURSE_CHANNEL = "course_reminders"
     const val DAILY_CHANNEL = "daily_summary"
+    const val PLANNER_CHANNEL = "study_planner"
     const val ACTION_COURSE = "cn.edu.whu.schedule.COURSE_REMINDER"
     const val ACTION_DAILY = "cn.edu.whu.schedule.DAILY_SUMMARY"
+    const val ACTION_PLANNER = "cn.edu.whu.schedule.PLANNER_REMINDER"
     const val ACTION_TEST = "cn.edu.whu.schedule.TEST_REMINDER"
 
     fun createNotificationChannels(context: Context) {
@@ -40,6 +43,9 @@ object ReminderScheduler {
                 NotificationChannel(DAILY_CHANNEL, "每日课表", NotificationManager.IMPORTANCE_DEFAULT).apply {
                     description = "每天早晨汇总当天课程"
                 },
+                NotificationChannel(PLANNER_CHANNEL, "考试与待办", NotificationManager.IMPORTANCE_HIGH).apply {
+                    description = "考试和学习待办的到期提醒"
+                },
             ),
         )
     }
@@ -49,44 +55,69 @@ object ReminderScheduler {
         snapshot: ScheduleSnapshot,
         reminderMinutes: Long = 15,
         now: LocalDateTime = LocalDateTime.now(),
+        courseScheduleEnabled: Boolean = true,
     ) {
         cancelScheduledCourses(context)
-        val requestCodes = mutableSetOf<Int>()
-        CourseReminderPlanner.window(snapshot, now.toLocalDate())?.let { window ->
+        cancelScheduledPlanner(context)
+        val courseCodes = mutableSetOf<Int>()
+        if (courseScheduleEnabled) CourseReminderPlanner.window(snapshot, now.toLocalDate())?.let { window ->
             OccurrenceEngine.between(snapshot, window.startInclusive, window.endInclusive)
                 .asSequence()
                 .filter { it.course.marker != CourseMarker.FINISHED }
                 .filter { it.startsAt.minusMinutes(reminderMinutes).isAfter(now) }
-                .forEach { requestCodes += scheduleCourse(context, it, reminderMinutes) }
+                .forEach { courseCodes += scheduleCourse(context, it, reminderMinutes) }
+        }
+
+        val plannerCodes = mutableSetOf<Int>()
+        PersonalReminderPlanner.plan(snapshot, now).forEach { reminder ->
+            plannerCodes += schedulePlanner(
+                context = context,
+                key = reminder.key,
+                trigger = reminder.triggerAt,
+                kind = reminder.kind,
+                title = reminder.title,
+                subtitle = reminder.subtitle,
+            )
         }
         reminderPreferences(context).edit {
-            putString(KEY_COURSE_REQUEST_CODES, requestCodes.joinToString(","))
-            putInt(KEY_SCHEDULED_COURSE_COUNT, requestCodes.size)
+            putString(KEY_COURSE_REQUEST_CODES, courseCodes.joinToString(","))
+            putString(KEY_PLANNER_REQUEST_CODES, plannerCodes.joinToString(","))
+            putInt(KEY_SCHEDULED_COURSE_COUNT, courseCodes.size)
+            putInt(KEY_SCHEDULED_PLANNER_COUNT, plannerCodes.size)
         }
-        scheduleNextDailySummary(context, snapshot)
+        if (courseScheduleEnabled) scheduleNextDailySummary(context, snapshot) else cancelDailySummary(context)
     }
 
     fun pauseAll(context: Context) {
         cancelScheduledCourses(context)
+        cancelScheduledPlanner(context)
         cancelDailySummary(context)
         reminderPreferences(context).edit {
             remove(KEY_COURSE_REQUEST_CODES)
+            remove(KEY_PLANNER_REQUEST_CODES)
             putInt(KEY_SCHEDULED_COURSE_COUNT, 0)
+            putInt(KEY_SCHEDULED_PLANNER_COUNT, 0)
         }
     }
 
     fun scheduledCourseCount(context: Context): Int =
         reminderPreferences(context).getInt(KEY_SCHEDULED_COURSE_COUNT, 0)
 
+    fun scheduledPlannerCount(context: Context): Int =
+        reminderPreferences(context).getInt(KEY_SCHEDULED_PLANNER_COUNT, 0)
+
     fun courseChannelEnabled(context: Context): Boolean =
         context.getSystemService(NotificationManager::class.java)
             .getNotificationChannel(COURSE_CHANNEL)
             ?.importance != NotificationManager.IMPORTANCE_NONE
 
+    fun plannerChannelEnabled(context: Context): Boolean =
+        context.getSystemService(NotificationManager::class.java)
+            .getNotificationChannel(PLANNER_CHANNEL)
+            ?.importance != NotificationManager.IMPORTANCE_NONE
+
     fun sendTestNotification(context: Context) {
-        context.sendBroadcast(
-            Intent(context, ReminderReceiver::class.java).apply { action = ACTION_TEST },
-        )
+        context.sendBroadcast(Intent(context, ReminderReceiver::class.java).apply { action = ACTION_TEST })
     }
 
     fun nextCourseReminder(
@@ -113,23 +144,61 @@ object ReminderScheduler {
             putExtra("date", occurrence.date.toString())
         }
         val requestCode = ("${occurrence.meeting.id}:${occurrence.date}".hashCode() and Int.MAX_VALUE)
-        schedule(context, trigger, PendingIntent.getBroadcast(
+        schedule(
             context,
-            requestCode,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        ))
+            trigger,
+            PendingIntent.getBroadcast(
+                context,
+                requestCode,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            ),
+        )
         return requestCode
     }
 
-    private fun cancelScheduledCourses(context: Context) {
+    private fun schedulePlanner(
+        context: Context,
+        key: String,
+        trigger: LocalDateTime,
+        kind: String,
+        title: String,
+        subtitle: String,
+    ): Int {
+        val intent = Intent(context, ReminderReceiver::class.java).apply {
+            action = ACTION_PLANNER
+            putExtra("kind", kind)
+            putExtra("title", title)
+            putExtra("subtitle", subtitle)
+        }
+        val requestCode = (key.hashCode() and Int.MAX_VALUE)
+        schedule(
+            context,
+            trigger,
+            PendingIntent.getBroadcast(
+                context,
+                requestCode,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            ),
+        )
+        return requestCode
+    }
+
+    private fun cancelScheduledCourses(context: Context) =
+        cancelCodes(context, KEY_COURSE_REQUEST_CODES, ACTION_COURSE)
+
+    private fun cancelScheduledPlanner(context: Context) =
+        cancelCodes(context, KEY_PLANNER_REQUEST_CODES, ACTION_PLANNER)
+
+    private fun cancelCodes(context: Context, preferenceKey: String, actionName: String) {
         val alarmManager = context.getSystemService(AlarmManager::class.java)
-        val codes = reminderPreferences(context).getString(KEY_COURSE_REQUEST_CODES, null)
+        val codes = reminderPreferences(context).getString(preferenceKey, null)
             ?.split(',')
             ?.mapNotNull(String::toIntOrNull)
             .orEmpty()
         codes.forEach { requestCode ->
-            val intent = Intent(context, ReminderReceiver::class.java).apply { action = ACTION_COURSE }
+            val intent = Intent(context, ReminderReceiver::class.java).apply { action = actionName }
             val pending = PendingIntent.getBroadcast(
                 context,
                 requestCode,
@@ -154,25 +223,29 @@ object ReminderScheduler {
             return
         }
         val intent = Intent(context, ReminderReceiver::class.java).apply { action = ACTION_DAILY }
-        schedule(context, next, PendingIntent.getBroadcast(
+        schedule(
             context,
-            DAILY_REQUEST_CODE,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        ))
+            next,
+            PendingIntent.getBroadcast(
+                context,
+                DAILY_REQUEST_CODE,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            ),
+        )
     }
 
     private fun cancelDailySummary(context: Context) {
-        val dailyIntent = Intent(context, ReminderReceiver::class.java).apply { action = ACTION_DAILY }
-        val daily = PendingIntent.getBroadcast(
+        val intent = Intent(context, ReminderReceiver::class.java).apply { action = ACTION_DAILY }
+        val pending = PendingIntent.getBroadcast(
             context,
             DAILY_REQUEST_CODE,
-            dailyIntent,
+            intent,
             PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
         )
-        if (daily != null) {
-            context.getSystemService(AlarmManager::class.java).cancel(daily)
-            daily.cancel()
+        if (pending != null) {
+            context.getSystemService(AlarmManager::class.java).cancel(pending)
+            pending.cancel()
         }
     }
 
@@ -193,5 +266,7 @@ object ReminderScheduler {
 
     private const val DAILY_REQUEST_CODE = 730
     private const val KEY_COURSE_REQUEST_CODES = "course_request_codes"
+    private const val KEY_PLANNER_REQUEST_CODES = "planner_request_codes"
     private const val KEY_SCHEDULED_COURSE_COUNT = "scheduled_course_count"
+    private const val KEY_SCHEDULED_PLANNER_COUNT = "scheduled_planner_count"
 }
